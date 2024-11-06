@@ -153,7 +153,7 @@ fn put_data<T: Read + Write + Seek>(
         position_out + offset,
         operand_name(operand),
         data,
-        (if data >= 32 && data <= 127 {
+        (if (32..=127).contains(&data) {
             data as u8 as char
         } else {
             ' '
