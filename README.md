@@ -1,4 +1,6 @@
-# Rust library for working ith JojoDiff files
+# jojodiff-rs
+
+Rust library for working with JojoDiff files
 
 The original Jojos Binary Diff tool can be found at https://jojodiff.sourceforge.net/
 and https://sourceforge.net/projects/jojodiff/
