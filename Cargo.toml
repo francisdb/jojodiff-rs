@@ -3,6 +3,13 @@ name = "jojodiff"
 description = "Rust library for handling JojoDiff files, a diff utility for binary files."
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/francisdb/jojodiff-rs"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/jojodiff"
+
+keywords = ["jojodiff", "patch", "diff", "patching", "jojo"]
+categories = ["filesystem", "compression"]
 
 [dependencies]
 log = "0.4.22"
