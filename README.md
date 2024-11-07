@@ -10,6 +10,15 @@ projects that need to work with JojoDiff files.
 
 Currently, it only supports applying JojoDiff patch files to binary files.
 
+## Usage
+
+```
+cargo add jojodiff
+```
+
+* Check the docs at https://docs.rs/jojodiff
+* Check the unit tests in src/lib.rs for examples.
+
 ## Logging
 
 This library uses the `log` crate for logging. To enable logging, set the `RUST_LOG` environment variable to `debug`.
