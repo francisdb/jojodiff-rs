@@ -21,7 +21,8 @@ cargo add jojodiff
 
 ## Logging
 
-This library uses the `log` crate for logging. To enable logging, set the `RUST_LOG` environment variable to `debug`.
+This library uses the `log` crate for logging. See https://docs.rs/log/latest/log/ for more information on how to select
+a logger implementation and configuring it.
 
 ## Running tests
 
