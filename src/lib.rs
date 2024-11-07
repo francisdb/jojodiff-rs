@@ -2,35 +2,21 @@ use log::debug;
 use std::io;
 use std::io::{Read, Seek, Write};
 
-const EOF: i32 = -1;
-
 /// 167 Escape
 const ESC: u8 = 0xA7;
-#[deprecated(note = "Use ESC instead")]
-const ESC_I32: i32 = 0xA7;
 /// 166 Modify
 const MOD: u8 = 0xA6;
-#[deprecated(note = "Use MOD instead")]
-const MOD_I32: i32 = 0xA6;
 /// 165 Insert
 const INS: u8 = 0xA5;
-#[deprecated(note = "Use INS instead")]
-const INS_I32: i32 = 0xA5;
 /// 164 Delete
 const DEL: u8 = 0xA4;
-#[deprecated(note = "Use DEL instead")]
-const DEL_I32: i32 = 0xA4;
 /// 163 Equal
 const EQL: u8 = 0xA3;
-#[deprecated(note = "Use EQL instead")]
-const EQL_I32: i32 = 0xA3;
 /// 162 Backtrace
 const BKT: u8 = 0xA2;
-#[deprecated(note = "Use BKT instead")]
-const BKT_I32: i32 = 0xA2;
 
 // read next operand from input
-const READ_NEXT_OPERAND: i32 = 0;
+const READ_NEXT_OPERAND: u8 = 0;
 
 fn operand_name(op: u8) -> String {
     match op {
@@ -45,7 +31,7 @@ fn operand_name(op: u8) -> String {
 }
 
 type Offset = u64;
-type Operand = i32;
+type Operand = u8;
 
 // TODO do we actually need this struct, can we not have extension methods on Read + Write + Seek?
 struct JStream<T: Read + Write + Seek> {
@@ -192,9 +178,9 @@ fn copy_data<T: Read + Write + Seek>(
     out_stream: &mut JStream<T>,
     position_original: Offset,
     position_out: Offset,
-    operand: i32,
-    pending: i32,
-    pending2: i32,
+    operand: Operand,
+    pending: Option<u8>,
+    pending2: Option<u8>,
 ) -> io::Result<(Option<Operand>, Offset)> {
     let mut bytes_read: Offset = 0;
 
@@ -204,102 +190,110 @@ fn copy_data<T: Read + Write + Seek>(
         ESC      xxx          ESC xxx
         xxx      EOF          xxx
     */
-    if pending != EOF {
+    if let Some(pending_byte) = pending {
         bytes_read += put_data(
             out_stream,
             position_original,
             position_out,
-            operand as u8,
-            pending as u8,
+            operand,
+            pending_byte,
             bytes_read,
         )?;
-        if pending == ESC as i32 && pending2 != ESC as i32 {
-            bytes_read += put_data(
-                out_stream,
-                position_original,
-                position_out,
-                operand as u8,
-                pending2 as u8,
-                bytes_read,
-            )?;
+        if pending_byte == ESC {
+            if let Some(pending_byte2) = pending2 {
+                bytes_read += put_data(
+                    out_stream,
+                    position_original,
+                    position_out,
+                    operand,
+                    pending_byte2,
+                    bytes_read,
+                )?;
+            }
         }
     }
 
     /* Read loop */
     while let Some(mut input) = patch_stream.get()? {
         // Handle ESC-code
-        if input == ESC as u8 {
-            let next_operand = patch_stream.get()?.map(|b| b as i32).unwrap_or(EOF);
-            match next_operand {
-                DEL_I32 | EQL_I32 | BKT_I32 | MOD_I32 | INS_I32 => (),
-                ESC_I32 => {
-                    // Double ESC: drop one
+        if input == ESC {
+            if let Some(next_operand) = patch_stream.get()? {
+                match next_operand {
+                    DEL | EQL | BKT | MOD | INS => (),
+                    ESC => {
+                        // Double ESC: drop one
+                        debug!(
+                            "{} {} ESC ESC",
+                            position_original + (if operand == MOD { bytes_read } else { 0 }),
+                            position_out + bytes_read
+                        );
+
+                        // Write the single ESC and continue
+                        bytes_read += put_data(
+                            out_stream,
+                            position_original,
+                            position_out,
+                            operand,
+                            input,
+                            bytes_read,
+                        )?;
+                        continue;
+                    }
+                    _ => {
+                        // ESC <xxx> with <xxx> not an opcode: output as they are
+                        debug!(
+                            "{} {} ESC XXX",
+                            position_original + (if operand == MOD { bytes_read } else { 0 }),
+                            position_out + bytes_read
+                        );
+
+                        // Write the escape, the <xxx> and continue
+                        bytes_read += put_data(
+                            out_stream,
+                            position_original,
+                            position_out,
+                            operand,
+                            input,
+                            bytes_read,
+                        )?;
+                        bytes_read += put_data(
+                            out_stream,
+                            position_original,
+                            position_out,
+                            operand,
+                            next_operand,
+                            bytes_read,
+                        )?;
+                        continue;
+                    }
+                }
+                if next_operand == operand {
+                    // <ESC> MOD within an <ESC> MOD is meaningless: handle as data
+                    // <ESC> INS within an <ESC> INS is meaningless: handle as data
                     debug!(
-                        "{} {} ESC ESC",
-                        position_original + (if operand == MOD_I32 { bytes_read } else { 0 }),
-                        position_out + bytes_read
+                        "{} {} ESC {}",
+                        position_original + (if operand == MOD { bytes_read } else { 0 }),
+                        position_out + bytes_read,
+                        next_operand
                     );
 
-                    // Write the single ESC and continue
                     bytes_read += put_data(
                         out_stream,
                         position_original,
                         position_out,
-                        operand as u8,
-                        input,
+                        operand,
+                        ESC,
                         bytes_read,
                     )?;
-                    continue;
+                    input = next_operand; // will be output below
+                } else {
+                    return Ok((Some(next_operand), bytes_read));
                 }
-                _ => {
-                    // ESC <xxx> with <xxx> not an opcode: output as they are
-                    debug!(
-                        "{} {} ESC XXX",
-                        position_original + (if operand == MOD_I32 { bytes_read } else { 0 }),
-                        position_out + bytes_read
-                    );
-
-                    // Write the escape, the <xxx> and continue
-                    bytes_read += put_data(
-                        out_stream,
-                        position_original,
-                        position_out,
-                        operand as u8,
-                        input,
-                        bytes_read,
-                    )?;
-                    bytes_read += put_data(
-                        out_stream,
-                        position_original,
-                        position_out,
-                        operand as u8,
-                        next_operand as u8,
-                        bytes_read,
-                    )?;
-                    continue;
-                }
-            }
-            if next_operand == operand {
-                // <ESC> MOD within an <ESC> MOD is meaningless: handle as data
-                // <ESC> INS within an <ESC> INS is meaningless: handle as data
-                debug!(
-                    "{} {} ESC {}",
-                    position_original + (if operand == MOD_I32 { bytes_read } else { 0 }),
-                    position_out + bytes_read,
-                    next_operand
-                );
-
-                bytes_read += put_data(
-                    out_stream,
-                    position_original,
-                    position_out,
-                    operand as u8,
-                    ESC as u8,
-                    bytes_read,
-                )?;
-                input = next_operand as u8; // will be output below
             } else {
-                return Ok((Some(next_operand), bytes_read));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "ESC at end of stream",
+                ));
             }
         }
 
@@ -308,7 +302,7 @@ fn copy_data<T: Read + Write + Seek>(
             out_stream,
             position_original,
             position_out,
-            operand as u8,
+            operand,
             input,
             bytes_read,
         )?;
@@ -333,8 +327,6 @@ pub fn patch<W: Read + Write + Seek>(
     patch_stream: &mut W,
     out_stream: &mut W,
 ) -> io::Result<()> {
-    // Current operand
-    let mut operand;
     // Position in source stream
     let mut position_original: Offset = 0;
     // Position in destination stream
@@ -345,53 +337,62 @@ pub fn patch<W: Read + Write + Seek>(
     let mut stream_patch = JStream::new(patch_stream);
     let mut stream_out = JStream::new(out_stream);
 
-    operand = READ_NEXT_OPERAND; // no operand
-    while operand != EOF {
-        // 1st Pending byte (EOF = no pending bye)
-        let mut inp: i32;
-        // 2nd Pending byte (EOF = no pending bye)
-        let mut dbl: i32;
+    // Current operand
+    let mut operand = READ_NEXT_OPERAND; // no operand
+    loop {
+        // 1st Pending byte
+        let pending1: Option<u8>;
+        // 2nd Pending byte
+        let pending2: Option<u8>;
         // Read operand from input, unless this has already been done
         if operand == READ_NEXT_OPERAND {
-            inp = stream_patch.get()?.map(|b| b as i32).unwrap_or(EOF);
-            if inp == EOF {
+            let next_byte = if let Some(byte) = stream_patch.get()? {
+                byte
+            } else {
+                // end of stream
                 break;
-            }
+            };
 
             // Handle ESC <opr>
-            if inp == ESC as i32 {
-                dbl = stream_patch.get()?.map(|b| b as i32).unwrap_or(EOF);
-                match dbl {
-                    EQL_I32 | DEL_I32 | BKT_I32 | MOD_I32 | INS_I32 => {
+            if next_byte == ESC {
+                let escaped_byte = if let Some(byte) = stream_patch.get()? {
+                    byte
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "ESC at end of stream",
+                    ));
+                };
+
+                match escaped_byte {
+                    EQL | DEL | BKT | MOD | INS => {
                         // new operand found, all ok !
-                        operand = dbl;
-                        dbl = EOF;
-                        inp = EOF;
-                    }
-                    EOF => {
-                        // serious error, let's call this a trailing byte
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "ESC at end of stream",
-                        ));
+                        operand = escaped_byte;
+                        pending1 = None;
+                        pending2 = None;
                     }
                     _ => {
                         // ESC xxx or ESC ESC at the start of a sequence
-                        // Resolve by double pending bytes: liInp and liDbl
-                        operand = MOD_I32;
+                        // Resolve by double pending bytes
+                        operand = MOD;
+                        pending1 = Some(ESC);
+                        pending2 = Some(escaped_byte);
                     }
                 }
             } else {
-                operand = MOD_I32; // If an ESC <opr> is missing, set default operand (gaining two bytes)
-                dbl = EOF;
+                operand = MOD; // If an ESC <opr> is missing, set default operand (gaining two bytes)
+                pending1 = Some(next_byte);
+                pending2 = None;
             }
         } else {
-            inp = EOF; // only needed when switching between MOD and INS
-            dbl = EOF;
+            // There is no lookahead so checking if we should stop copying data involves reading the
+            // next operand. This is done by the copy_data function used by the MOD and INS operands.
+            pending1 = None;
+            pending2 = None;
         }
 
         match operand {
-            MOD_I32 => {
+            MOD => {
                 // insert data from the patch file into the output file while also advancing the source file
                 let (next_operand, bytes_read) = copy_data(
                     &mut stream_patch,
@@ -399,15 +400,20 @@ pub fn patch<W: Read + Write + Seek>(
                     position_original,
                     position_out,
                     operand,
-                    inp,
-                    dbl,
+                    pending1,
+                    pending2,
                 )?;
                 debug!("{} {} MOD {}", position_original, position_out, bytes_read);
                 position_original += bytes_read;
                 position_out += bytes_read;
-                operand = next_operand.unwrap_or(EOF);
+                if let Some(o) = next_operand {
+                    operand = o;
+                } else {
+                    // end of stream
+                    break;
+                }
             }
-            INS_I32 => {
+            INS => {
                 // insert data from the patch file at the current position in the output file
                 let (next_operand, bytes_read) = copy_data(
                     &mut stream_patch,
@@ -415,21 +421,26 @@ pub fn patch<W: Read + Write + Seek>(
                     position_original,
                     position_out,
                     operand,
-                    inp,
-                    dbl,
+                    pending1,
+                    pending2,
                 )?;
                 debug!("{} {} INS {}", position_original, position_out, bytes_read);
                 position_out += bytes_read;
-                operand = next_operand.unwrap_or(EOF);
+                if let Some(o) = next_operand {
+                    operand = o;
+                } else {
+                    // end of stream
+                    break;
+                }
             }
-            DEL_I32 => {
+            DEL => {
                 // skip the next <len> bytes in the source file
                 let len = get_int(&mut stream_patch)?;
                 debug!("{} {} DEL {}", position_original, position_out, len);
                 position_original += len;
                 operand = READ_NEXT_OPERAND;
             }
-            EQL_I32 => {
+            EQL => {
                 /* copy the next <len> bytes from the source file to the output file */
                 let len = get_int(&mut stream_patch)?;
                 debug!("{} {} EQL {}", position_original, position_out, len);
@@ -438,7 +449,7 @@ pub fn patch<W: Read + Write + Seek>(
                 position_out += len;
                 operand = READ_NEXT_OPERAND;
             }
-            BKT_I32 => {
+            BKT => {
                 // go back <offset> bytes in the source file
                 let offset = get_int(&mut stream_patch)?;
                 debug!("{} {} BKT {}", position_original, position_out, offset);
@@ -452,7 +463,7 @@ pub fn patch<W: Read + Write + Seek>(
                 ));
             }
         }
-    } /* while ! EOF */
+    }
 
     debug!("{} {} EOF", position_original, position_out);
     Ok(())
@@ -506,6 +517,14 @@ mod tests {
     }
 
     #[test]
+    fn get_int_8_bytes() -> io::Result<()> {
+        let mut cursor = io::Cursor::new(vec![255, 1, 0, 0, 0, 0, 0, 0, 0]);
+        let mut jstream = JStream::new(&mut cursor);
+        let result = get_int(&mut jstream)?;
+        Ok(assert_eq!(result, 1 << 56))
+    }
+
+    #[test]
     fn patch_empty_file_and_empty_patch() -> io::Result<()> {
         setup();
         let mut empty_input_stream = io::Cursor::new(vec![]);
@@ -523,10 +542,27 @@ mod tests {
     }
 
     #[test]
-    fn patch_empty_file_and_patch_invalid() {
+    fn patch_trailing_esc() {
         setup();
         let in_data = vec![];
-        let patch_data = vec![ESC as u8];
+        let patch_data = vec![ESC];
+        let out_data = vec![];
+
+        let mut in_cursor = io::Cursor::new(in_data);
+        let mut patch_cursor = io::Cursor::new(patch_data);
+        let mut out_cursor = io::Cursor::new(out_data);
+
+        let result = patch(&mut in_cursor, &mut patch_cursor, &mut out_cursor);
+
+        assert_eq!(result.is_err(), true);
+        assert_eq!(result.unwrap_err().to_string(), "ESC at end of stream");
+    }
+
+    #[test]
+    fn patch_trailing_esc_with_body() {
+        setup();
+        let in_data = vec![];
+        let patch_data = vec![1, 2, 3, ESC];
         let out_data = vec![];
 
         let mut in_cursor = io::Cursor::new(in_data);
@@ -543,7 +579,7 @@ mod tests {
     fn patch_delete_1_byte() -> io::Result<()> {
         setup();
         let in_data = vec![1];
-        let patch_data = vec![ESC as u8, DEL as u8, 1];
+        let patch_data = vec![ESC, DEL, 1];
         let out_data = vec![];
 
         let mut in_cursor = io::Cursor::new(in_data);
@@ -561,7 +597,7 @@ mod tests {
     fn patch_identical_copy() -> io::Result<()> {
         setup();
         let in_data = vec![1, 2, 3];
-        let patch_data = vec![ESC as u8, EQL as u8, 2];
+        let patch_data = vec![ESC, EQL, 2];
         let out_data = vec![];
 
         let mut in_cursor = io::Cursor::new(in_data);
@@ -581,11 +617,11 @@ mod tests {
         let in_data = vec![1];
         #[rustfmt::skip]
         let patch_data = vec![
-            ESC as u8, EQL as u8, 0,
-            ESC as u8, BKT as u8, 0,
-            ESC as u8, EQL as u8, 0,
-            ESC as u8, BKT as u8, 0,
-            ESC as u8, EQL as u8, 0,
+            ESC, EQL, 0,
+            ESC, BKT, 0,
+            ESC, EQL, 0,
+            ESC, BKT, 0,
+            ESC, EQL, 0,
         ];
         let out_data = vec![];
 
@@ -606,11 +642,11 @@ mod tests {
         let in_data = vec![1, 2, 3];
         #[rustfmt::skip]
         let patch_data = vec![
-            ESC as u8, EQL as u8, 2,
-            ESC as u8, BKT as u8, 2,
-            ESC as u8, EQL as u8, 2,
-            ESC as u8, BKT as u8, 2,
-            ESC as u8, EQL as u8, 2,
+            ESC, EQL, 2,
+            ESC, BKT, 2,
+            ESC, EQL, 2,
+            ESC, BKT, 2,
+            ESC, EQL, 2,
         ];
         let out_data = vec![];
 
@@ -631,7 +667,7 @@ mod tests {
         let in_data = vec![];
         #[rustfmt::skip]
     let patch_data = vec![
-        ESC as u8, INS as u8, 1, 2, ESC as u8, ESC as u8, 3
+        ESC, INS, 1, 2, ESC, ESC, 3
     ];
         let out_data = vec![];
 
@@ -642,7 +678,7 @@ mod tests {
         patch(&mut in_cursor, &mut patch_cursor, &mut out_cursor)?;
 
         let out_data = out_cursor.into_inner();
-        let expected_data = [1, 2, ESC as u8, 3];
+        let expected_data = [1, 2, ESC, 3];
         Ok(assert_eq!(out_data, expected_data))
     }
 
@@ -652,9 +688,9 @@ mod tests {
         let in_data = vec![1, 2, 3, 4, 5, 6, 7];
         #[rustfmt::skip]
         let patch_data = vec![
-            ESC as u8, EQL as u8, 1,
-            ESC as u8, MOD as u8, 0, 0, 0,
-            ESC as u8, EQL as u8, 1,
+            ESC, EQL, 1,
+            ESC, MOD, 0, 0, 0,
+            ESC, EQL, 1,
         ];
         let out_data = vec![];
 
@@ -666,6 +702,32 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [1, 2, 0, 0, 0, 6, 7];
+        Ok(assert_eq!(out_data, expected_data))
+    }
+
+    #[test]
+    fn patch_mod_ins() -> io::Result<()> {
+        // this is a special case where MOD follows INS or the other way round
+        setup();
+        let in_data = vec![1, 2, 3];
+        #[rustfmt::skip]
+        let patch_data = vec![
+            ESC, MOD, 10,
+            ESC, INS, 11,
+            ESC, MOD, 12,
+            ESC, INS, 13,
+            ESC, MOD, 14,
+        ];
+        let out_data = vec![];
+
+        let mut in_cursor = io::Cursor::new(in_data);
+        let mut patch_cursor = io::Cursor::new(patch_data);
+        let mut out_cursor = io::Cursor::new(out_data);
+
+        patch(&mut in_cursor, &mut patch_cursor, &mut out_cursor)?;
+
+        let out_data = out_cursor.into_inner();
+        let expected_data = [10, 11, 12, 13, 14];
         Ok(assert_eq!(out_data, expected_data))
     }
 
@@ -697,10 +759,10 @@ mod tests {
         // replace World with Universe
         #[rustfmt::skip]
         let patch_data = vec![
-            ESC as u8, EQL as u8, 6,
-            ESC as u8, MOD as u8, b'U', b'n', b'i', b'v', b'e',
-            ESC as u8, INS as u8, b'r', b's', b'e',
-            ESC as u8, EQL as u8, 0,
+            ESC, EQL, 6,
+            ESC, MOD, b'U', b'n', b'i', b'v', b'e',
+            ESC, INS, b'r', b's', b'e',
+            ESC, EQL, 0,
         ];
         let out_data = vec![];
 
