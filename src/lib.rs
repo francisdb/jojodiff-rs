@@ -54,7 +54,7 @@ fn copy_bytes<R: Read + Seek, W: Write>(
     source_pos: u64,
     len: usize,
 ) -> io::Result<()> {
-    let mut buf = vec![0; len as usize];
+    let mut buf = vec![0; len];
     source.seek(std::io::SeekFrom::Start(source_pos))?;
     source.read_exact(&mut buf)?;
     dest.write_all(&buf)?;
