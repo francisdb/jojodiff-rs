@@ -33,123 +33,112 @@ fn operand_name(op: u8) -> String {
 type Offset = u64;
 type Operand = u8;
 
-// TODO do we actually need this struct, can we not have extension methods on Read + Write + Seek?
-struct JStream<T: Read + Write + Seek> {
-    stream: T,
+/// Read a byte from the input.
+/// return the byte read, or EOF if end of stream
+/// * `read` Input reader
+fn read_byte<R: Read>(read: &mut R) -> io::Result<Option<u8>> {
+    let mut byte_buf = [0; 1];
+    let n = read.read(&mut byte_buf)?;
+    let result = if n == 0 { None } else { Some(byte_buf[0]) };
+    Ok(result)
 }
 
-impl<T: Read + Write + Seek> JStream<T> {
-    fn new(stream: T) -> Self {
-        JStream { stream }
-    }
-
-    /// Read a byte from the input.
-    /// return the byte read, or EOF if end of stream
-    fn get(&mut self) -> io::Result<Option<u8>> {
-        let mut byte_buf = [0; 1];
-        let n = self.stream.read(&mut byte_buf)?;
-        let result = if n == 0 { None } else { Some(byte_buf[0]) };
-        Ok(result)
-    }
-
-    fn get_expect(&mut self) -> io::Result<u8> {
-        let mut byte_buf = [0; 1];
-        let n = self.stream.read(&mut byte_buf)?;
-        if n == 0 {
-            Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Unexpected end of stream",
-            ))
-        } else {
-            Ok(byte_buf[0])
-        }
-    }
-
-    /// Copy a series of bytes from input to output.
-    /// * `source`    Input stream
-    /// * `pos`       Position to copy from
-    /// * `len`       Number of bytes to copy
-    fn copyfrom<U: Read + Seek + Write>(
-        &mut self,
-        source: &mut JStream<U>,
-        pos: Offset,
-        len: Offset,
-    ) -> io::Result<()> {
-        let mut buf = vec![0; len as usize];
-        source.stream.seek(std::io::SeekFrom::Start(pos))?;
-        source.stream.read_exact(&mut buf)?;
-        self.stream.write_all(&buf)?;
-        Ok(())
-    }
-
-    /// Write a byte to the output.
-    /// * `byte`   data to write
-    fn put_byte(&mut self, byte: u8) -> io::Result<()> {
-        self.stream.write_all(&[byte])
-    }
+/// Copy a series of bytes from input to output.
+/// * `source`     Input reader
+/// * `dest`       Output writer
+/// * `source_pos` Position to copy from
+/// * `len`        Number of bytes to copy
+fn copy_bytes<R: Read + Seek, W: Write>(
+    source: &mut R,
+    dest: &mut W,
+    source_pos: u64,
+    len: usize,
+) -> io::Result<()> {
+    let mut buf = vec![0; len as usize];
+    source.seek(std::io::SeekFrom::Start(source_pos))?;
+    source.read_exact(&mut buf)?;
+    dest.write_all(&buf)?;
+    Ok(())
 }
 
 /// Get an offset/len from the input stream
-fn get_int<T: Read + Seek + Write>(input_steam: &mut JStream<T>) -> io::Result<Offset> {
-    let first_byte = input_steam.get_expect()?;
+fn get_int<T: Read>(mut input_stream: T) -> io::Result<Offset> {
+    let mut buf = [0; 1];
+    input_stream.read_exact(&mut buf).map_err(|e| {
+        io::Error::new(e.kind(), format!("Failed to read first length byte: {}", e))
+    })?;
+    let first_byte = buf[0];
     if first_byte < 252 {
         Ok(first_byte as Offset + 1)
     } else if first_byte == 252 {
-        Ok(253 + input_steam.get_expect()? as Offset)
+        let mut buf = [0; 1];
+        input_stream.read_exact(&mut buf).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read 1 byte for 253 + 8-bit length: {}", e),
+            )
+        })?;
+        let val = 253 + u8::from_be_bytes(buf) as Offset;
+        Ok(val)
     } else if first_byte == 253 {
-        let mut val = input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
+        let mut buf = [0; 2];
+        input_stream.read_exact(&mut buf).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read 2 bytes for 16-bit length: {}", e),
+            )
+        })?;
+        let val = u16::from_be_bytes(buf) as Offset;
         Ok(val)
     } else if first_byte == 254 {
-        let mut val = input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
+        let mut buf = [0; 4];
+        input_stream.read_exact(&mut buf).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read 4 bytes for 32-bit length: {}", e),
+            )
+        })?;
+        let val = u32::from_be_bytes(buf) as Offset;
         Ok(val)
     } else {
-        // #ifdef JDIFF_LARGEFILE
-        let mut val = input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
-        val = (val << 8) + input_steam.get_expect()? as Offset;
+        let mut buf = [0; 8];
+        input_stream.read_exact(&mut buf).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read 8 bytes for 64-bit length: {}", e),
+            )
+        })?;
+        let val = u64::from_be_bytes(buf) as Offset;
         Ok(val)
-        // #else
-        // fprintf(stderr, "64-bit length numbers not supported!\n");
-        // return EXI_LRG;
-        // #endif
     }
 }
 
 /// Put one byte of output data
 ///
-/// * `stream_out` output stream
+/// * `writer` output writer
+/// * `data` output byte
 /// * `position_original` position on source stream
 /// * `position_out` position on output stream
 /// * `operand` MOD or INS
-/// * `data` output byte
 /// * `offset` offset
 ///
 /// returns 1
-fn put_data<T: Read + Write + Seek>(
-    stream_out: &mut JStream<T>,
+fn write_byte<W: Write>(
+    writer: &mut W,
+    byte: u8,
     position_original: Offset,
     position_out: Offset,
     operand: u8,
-    data: u8,
     offset: Offset,
 ) -> io::Result<Offset> {
-    stream_out.put_byte(data)?;
+    writer.write_all(&[byte])?;
     debug!(
         "put_data {} {} {} {} {}",
         position_original + (if operand == MOD { offset } else { 0 }),
         position_out + offset,
         operand_name(operand),
-        data,
-        render_ascii(data)
+        byte,
+        render_ascii(byte)
     );
     Ok(1)
 }
@@ -164,7 +153,7 @@ fn render_ascii(data: u8) -> char {
 
 /// Read a data sequence (INS or MOD)
 ///
-/// * `patch_stream`         input stream
+/// * `patch_reader`         patch stream
 /// * `out_stream`           output stream
 /// * `position_original`    position on source stream
 /// * `position_out`         position on output stream
@@ -173,9 +162,9 @@ fn render_ascii(data: u8) -> char {
 /// * `dbl`                  Second pending byte (EOF = no pending byte)
 ///
 /// returns the next operand and the bytes read
-fn copy_data<T: Read + Write + Seek>(
-    patch_stream: &mut JStream<T>,
-    out_stream: &mut JStream<T>,
+fn copy_data<R: Read, W: Write>(
+    patch_reader: &mut R,
+    out_writer: &mut W,
     position_original: Offset,
     position_out: Offset,
     operand: Operand,
@@ -191,22 +180,22 @@ fn copy_data<T: Read + Write + Seek>(
         xxx      EOF          xxx
     */
     if let Some(pending_byte) = pending {
-        bytes_read += put_data(
-            out_stream,
+        bytes_read += write_byte(
+            out_writer,
+            pending_byte,
             position_original,
             position_out,
             operand,
-            pending_byte,
             bytes_read,
         )?;
         if pending_byte == ESC {
             if let Some(pending_byte2) = pending2 {
-                bytes_read += put_data(
-                    out_stream,
+                bytes_read += write_byte(
+                    out_writer,
+                    pending_byte2,
                     position_original,
                     position_out,
                     operand,
-                    pending_byte2,
                     bytes_read,
                 )?;
             }
@@ -214,10 +203,10 @@ fn copy_data<T: Read + Write + Seek>(
     }
 
     /* Read loop */
-    while let Some(mut input) = patch_stream.get()? {
+    while let Some(mut input) = read_byte(patch_reader)? {
         // Handle ESC-code
         if input == ESC {
-            if let Some(next_operand) = patch_stream.get()? {
+            if let Some(next_operand) = read_byte(patch_reader)? {
                 match next_operand {
                     DEL | EQL | BKT | MOD | INS => (),
                     ESC => {
@@ -229,12 +218,12 @@ fn copy_data<T: Read + Write + Seek>(
                         );
 
                         // Write the single ESC and continue
-                        bytes_read += put_data(
-                            out_stream,
+                        bytes_read += write_byte(
+                            out_writer,
+                            input,
                             position_original,
                             position_out,
                             operand,
-                            input,
                             bytes_read,
                         )?;
                         continue;
@@ -248,20 +237,20 @@ fn copy_data<T: Read + Write + Seek>(
                         );
 
                         // Write the escape, the <xxx> and continue
-                        bytes_read += put_data(
-                            out_stream,
+                        bytes_read += write_byte(
+                            out_writer,
+                            input,
                             position_original,
                             position_out,
                             operand,
-                            input,
                             bytes_read,
                         )?;
-                        bytes_read += put_data(
-                            out_stream,
+                        bytes_read += write_byte(
+                            out_writer,
+                            next_operand,
                             position_original,
                             position_out,
                             operand,
-                            next_operand,
                             bytes_read,
                         )?;
                         continue;
@@ -277,12 +266,12 @@ fn copy_data<T: Read + Write + Seek>(
                         next_operand
                     );
 
-                    bytes_read += put_data(
-                        out_stream,
+                    bytes_read += write_byte(
+                        out_writer,
+                        ESC,
                         position_original,
                         position_out,
                         operand,
-                        ESC,
                         bytes_read,
                     )?;
                     input = next_operand; // will be output below
@@ -298,12 +287,12 @@ fn copy_data<T: Read + Write + Seek>(
         }
 
         // Handle data
-        bytes_read += put_data(
-            out_stream,
+        bytes_read += write_byte(
+            out_writer,
+            input,
             position_original,
             position_out,
             operand,
-            input,
             bytes_read,
         )?;
     } /* while ! EOF */
@@ -313,29 +302,21 @@ fn copy_data<T: Read + Write + Seek>(
 
 /// Patch function
 ///
-/// Input stream consists of a series of
-///   <op> (<data> || <len>)
-/// where
-///   <op>   = <ESC> (<MOD>||<INS>||<DEL>||<EQL>||<BKT>)
-///   <data> = <chr>||<ESC><ESC>
-///   <chr>  = any byte different from <ESC><MOD><INS><DEL><EQL> or <BKT>
-///   <ESC><ESC> yields one <ESC> byte
+/// * `in_reader`  Input reader
+/// * `patch_reader` Patch reader
+/// * `out_writer` Output writer
 ///
-/// Input and patch streams are read only, output stream is written to.
-pub fn patch<W: Read + Write + Seek>(
-    in_stream: &mut W,
-    patch_stream: &mut W,
-    out_stream: &mut W,
+/// *Note: we suggest using `BufReader` and `BufWriter` to improve performance*
+///
+pub fn patch<R: Read + Seek, W: Write>(
+    in_reader: &mut R,
+    patch_reader: &mut R,
+    out_writer: &mut W,
 ) -> io::Result<()> {
     // Position in source stream
     let mut position_original: Offset = 0;
     // Position in destination stream
     let mut position_out: Offset = 0;
-
-    // wrapped streams
-    let mut stream_original = JStream::new(in_stream);
-    let mut stream_patch = JStream::new(patch_stream);
-    let mut stream_out = JStream::new(out_stream);
 
     // Current operand
     let mut operand = READ_NEXT_OPERAND; // no operand
@@ -346,7 +327,7 @@ pub fn patch<W: Read + Write + Seek>(
         let pending2: Option<u8>;
         // Read operand from input, unless this has already been done
         if operand == READ_NEXT_OPERAND {
-            let next_byte = if let Some(byte) = stream_patch.get()? {
+            let next_byte = if let Some(byte) = read_byte(patch_reader)? {
                 byte
             } else {
                 // end of stream
@@ -355,7 +336,7 @@ pub fn patch<W: Read + Write + Seek>(
 
             // Handle ESC <opr>
             if next_byte == ESC {
-                let escaped_byte = if let Some(byte) = stream_patch.get()? {
+                let escaped_byte = if let Some(byte) = read_byte(patch_reader)? {
                     byte
                 } else {
                     return Err(io::Error::new(
@@ -395,15 +376,18 @@ pub fn patch<W: Read + Write + Seek>(
             MOD => {
                 // insert data from the patch file into the output file while also advancing the source file
                 let (next_operand, bytes_read) = copy_data(
-                    &mut stream_patch,
-                    &mut stream_out,
+                    patch_reader,
+                    out_writer,
                     position_original,
                     position_out,
                     operand,
                     pending1,
                     pending2,
                 )?;
-                debug!("{} {} MOD {}", position_original, position_out, bytes_read);
+                debug!(
+                    "{} {} MOD {} byte(s)",
+                    position_original, position_out, bytes_read
+                );
                 position_original += bytes_read;
                 position_out += bytes_read;
                 if let Some(o) = next_operand {
@@ -416,15 +400,18 @@ pub fn patch<W: Read + Write + Seek>(
             INS => {
                 // insert data from the patch file at the current position in the output file
                 let (next_operand, bytes_read) = copy_data(
-                    &mut stream_patch,
-                    &mut stream_out,
+                    patch_reader,
+                    out_writer,
                     position_original,
                     position_out,
                     operand,
                     pending1,
                     pending2,
                 )?;
-                debug!("{} {} INS {}", position_original, position_out, bytes_read);
+                debug!(
+                    "{} {} INS {} byte(s)",
+                    position_original, position_out, bytes_read
+                );
                 position_out += bytes_read;
                 if let Some(o) = next_operand {
                     operand = o;
@@ -435,23 +422,23 @@ pub fn patch<W: Read + Write + Seek>(
             }
             DEL => {
                 // skip the next <len> bytes in the source file
-                let len = get_int(&mut stream_patch)?;
-                debug!("{} {} DEL {}", position_original, position_out, len);
+                let len = get_int(&mut *patch_reader)?;
+                debug!("{} {} DEL {} byte(s)", position_original, position_out, len);
                 position_original += len;
                 operand = READ_NEXT_OPERAND;
             }
             EQL => {
                 /* copy the next <len> bytes from the source file to the output file */
-                let len = get_int(&mut stream_patch)?;
-                debug!("{} {} EQL {}", position_original, position_out, len);
-                stream_out.copyfrom(&mut stream_original, position_original, len)?;
+                let len = get_int(&mut *patch_reader)?;
+                debug!("{} {} EQL {} byte(s)", position_original, position_out, len);
+                copy_bytes(in_reader, out_writer, position_original, len as usize)?;
                 position_original += len;
                 position_out += len;
                 operand = READ_NEXT_OPERAND;
             }
             BKT => {
                 // go back <offset> bytes in the source file
-                let offset = get_int(&mut stream_patch)?;
+                let offset = get_int(&mut *patch_reader)?;
                 debug!("{} {} BKT {}", position_original, position_out, offset);
                 position_original -= offset;
                 operand = READ_NEXT_OPERAND;
@@ -464,7 +451,7 @@ pub fn patch<W: Read + Write + Seek>(
             }
         }
     }
-
+    out_writer.flush()?;
     debug!("{} {} EOF", position_original, position_out);
     Ok(())
 }
@@ -487,41 +474,46 @@ mod tests {
     #[test]
     fn get_int_1_byte() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![1]);
-        let mut jstream = JStream::new(&mut cursor);
-        let result = get_int(&mut jstream)?;
+        let result = get_int(&mut cursor)?;
         Ok(assert_eq!(result, 2))
     }
 
     #[test]
     fn get_int_2_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![252, 1]);
-        let mut jstream = JStream::new(&mut cursor);
-        let result = get_int(&mut jstream)?;
+        let result = get_int(&mut cursor)?;
         Ok(assert_eq!(result, 254))
     }
 
     #[test]
     fn get_int_3_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![253, 1, 2]);
-        let mut jstream = JStream::new(&mut cursor);
-        let result = get_int(&mut jstream)?;
+        let result = get_int(&mut cursor)?;
         Ok(assert_eq!(result, 258))
     }
 
     #[test]
     fn get_int_4_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![254, 1, 0, 0, 0]);
-        let mut jstream = JStream::new(&mut cursor);
-        let result = get_int(&mut jstream)?;
+        let result = get_int(&mut cursor)?;
         Ok(assert_eq!(result, 1 << 24))
     }
 
     #[test]
     fn get_int_8_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![255, 1, 0, 0, 0, 0, 0, 0, 0]);
-        let mut jstream = JStream::new(&mut cursor);
-        let result = get_int(&mut jstream)?;
+        let result = get_int(&mut cursor)?;
         Ok(assert_eq!(result, 1 << 56))
+    }
+
+    #[test]
+    fn get_int_8_bytes_missing() -> io::Result<()> {
+        let mut cursor = io::Cursor::new(vec![255, 1, 0]);
+        let result = get_int(&mut cursor);
+        Ok(assert_eq!(
+            result.unwrap_err().to_string(),
+            "Failed to read 8 bytes for 64-bit length: failed to fill whole buffer"
+        ))
     }
 
     #[test]
@@ -579,7 +571,7 @@ mod tests {
     fn patch_delete_1_byte() -> io::Result<()> {
         setup();
         let in_data = vec![1];
-        let patch_data = vec![ESC, DEL, 1];
+        let patch_data = vec![ESC, DEL, 0];
         let out_data = vec![];
 
         let mut in_cursor = io::Cursor::new(in_data);
