@@ -53,7 +53,7 @@ where
 
 Where:
 
-* `<ESC>` (`0xA7`) escape byte
+* `<ESC>` (`0xA7`) escape: Indicates that the next byte is an operand.
 * `<MOD>` (`0xA6`) modify: Replaces bytes from the original file with bytes from the patch file.
 * `<INS>` (`0xA5`) insert: Inserts bytes from the patch file into the destination file.
 * `<DEL>` (`0xA4`) delete: Skips bytes from the original file.
