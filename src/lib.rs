@@ -475,45 +475,50 @@ mod tests {
     fn get_int_1_byte() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![1]);
         let result = get_int(&mut cursor)?;
-        Ok(assert_eq!(result, 2))
+        assert_eq!(result, 2);
+        Ok(())
     }
 
     #[test]
     fn get_int_2_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![252, 1]);
         let result = get_int(&mut cursor)?;
-        Ok(assert_eq!(result, 254))
+        assert_eq!(result, 254);
+        Ok(())
     }
 
     #[test]
     fn get_int_3_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![253, 1, 2]);
         let result = get_int(&mut cursor)?;
-        Ok(assert_eq!(result, 258))
+        assert_eq!(result, 258);
+        Ok(())
     }
 
     #[test]
     fn get_int_4_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![254, 1, 0, 0, 0]);
         let result = get_int(&mut cursor)?;
-        Ok(assert_eq!(result, 1 << 24))
+        assert_eq!(result, 1 << 24);
+        Ok(())
     }
 
     #[test]
     fn get_int_8_bytes() -> io::Result<()> {
         let mut cursor = io::Cursor::new(vec![255, 1, 0, 0, 0, 0, 0, 0, 0]);
         let result = get_int(&mut cursor)?;
-        Ok(assert_eq!(result, 1 << 56))
+        assert_eq!(result, 1 << 56);
+        Ok(())
     }
 
     #[test]
-    fn get_int_8_bytes_missing() -> io::Result<()> {
+    fn get_int_8_bytes_missing() {
         let mut cursor = io::Cursor::new(vec![255, 1, 0]);
         let result = get_int(&mut cursor);
-        Ok(assert_eq!(
+        assert_eq!(
             result.unwrap_err().to_string(),
             "Failed to read 8 bytes for 64-bit length: failed to fill whole buffer"
-        ))
+        )
     }
 
     #[test]
@@ -530,7 +535,8 @@ mod tests {
         )?;
 
         let out_len = empty_output_stream.get_ref().len();
-        Ok(assert_eq!(out_len, 0))
+        assert_eq!(out_len, 0);
+        Ok(())
     }
 
     #[test]
@@ -582,7 +588,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data: [u8; 0] = [];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -600,7 +607,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [1, 2, 3];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -625,7 +633,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [1, 1, 1];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -650,7 +659,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [1, 2, 3, 1, 2, 3, 1, 2, 3];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -671,7 +681,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [1, 2, ESC, 3];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -694,7 +705,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [1, 2, 0, 0, 0, 6, 7];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -720,7 +732,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [10, 11, 12, 13, 14];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -741,7 +754,8 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = [3, 2, 1];
-        Ok(assert_eq!(out_data, expected_data))
+        assert_eq!(out_data, expected_data);
+        Ok(())
     }
 
     #[test]
@@ -766,9 +780,7 @@ mod tests {
 
         let out_data = out_cursor.into_inner();
         let expected_data = "Hello, Universe!";
-        Ok(assert_eq!(
-            String::from_utf8_lossy(&out_data),
-            expected_data
-        ))
+        assert_eq!(String::from_utf8_lossy(&out_data), expected_data);
+        Ok(())
     }
 }
